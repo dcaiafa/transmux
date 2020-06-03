@@ -1,4 +1,5 @@
 mod demuxer;
+mod ts_parser;
 
 #[derive(Debug)]
 pub enum StreamType {
