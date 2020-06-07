@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-pub mod context;
-pub mod mp2t;
-
+mod context;
+mod crc;
 mod internal;
+mod mp2t;

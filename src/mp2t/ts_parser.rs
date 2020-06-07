@@ -9,7 +9,7 @@ use mockall::automock;
 const PACKET_SIZE: usize = 188;
 const HEADER_SYNC_WORD: u8 = 0x47;
 
-#[derive(Default, Debug)]
+#[derive(Default)]
 pub struct TsPacket<'a> {
   pub pos: i64,
   pub payload: &'a [u8],
@@ -24,19 +24,19 @@ pub struct TsPacket<'a> {
 
 #[cfg_attr(test, automock)]
 pub trait TsHandler {
-  fn on_ts_packet<'a>(&mut self, ctx: &mut Context, pkt: &'a TsPacket<'a>);
+  fn on_ts_packet<'a>(&mut self, ctx: &mut Context, pkt: &TsPacket<'a>);
 }
 
 /// Implements a parser for MPEG-ts transport_packets as specified in
 /// ISO/IEC 13818-1 2.4.3.2.
-pub struct TsParser<'a> {
-  handler: &'a mut dyn TsHandler,
+pub struct TsParser<H: TsHandler> {
+  handler: H,
   byte_queue: ByteQueue,
   synchronized: bool,
 }
 
-impl<'a> TsParser<'a> {
-  pub fn new(handler: &'a mut dyn TsHandler) -> TsParser<'a> {
+impl<H: TsHandler> TsParser<H> {
+  pub fn new(handler: H) -> TsParser<H> {
     TsParser {
       handler: handler,
       byte_queue: ByteQueue::new(),
@@ -296,14 +296,12 @@ mod tests {
       .expect_on_ts_packet()
       .times(1)
       .withf(|_ctx: &Context, pkt: &TsPacket| {
-        assert_eq!(pkt.payload, &PKT_NO_AF[4..]);
-        assert!(pkt.pcr.is_none());
-        true
+        pkt.pid == 0x65 && pkt.payload == &PKT_NO_AF[4..] && pkt.pcr.is_none()
       })
       .return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = TsParser::new(&mut handler);
+    let mut parser = TsParser::new(handler);
     parser.parse(&mut ctx, PKT_NO_AF);
 
     assert_eq!(ctx.stats.unsynchronized_bytes, 0);
@@ -318,14 +316,12 @@ mod tests {
       .expect_on_ts_packet()
       .times(1)
       .withf(|_ctx: &Context, pkt: &TsPacket| {
-        assert_eq!(pkt.payload, &PKT_TINY_AF[6..]);
-        assert!(pkt.pcr.is_none());
-        true
+        pkt.payload == &PKT_TINY_AF[6..] && pkt.pcr.is_none()
       })
       .return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = TsParser::new(&mut handler);
+    let mut parser = TsParser::new(handler);
     parser.parse(&mut ctx, PKT_TINY_AF);
 
     assert_eq!(ctx.stats.unsynchronized_bytes, 0);
@@ -340,14 +336,12 @@ mod tests {
       .expect_on_ts_packet()
       .times(1)
       .withf(|_ctx: &Context, pkt: &TsPacket| {
-        assert_eq!(pkt.payload, &PKT_AF_PCR[12..]);
-        assert_eq!(pkt.pcr.unwrap(), 2236884504900);
-        true
+        pkt.payload == &PKT_AF_PCR[12..] && pkt.pcr.unwrap() == 2236884504900
       })
       .return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = TsParser::new(&mut handler);
+    let mut parser = TsParser::new(handler);
     parser.parse(&mut ctx, PKT_AF_PCR);
 
     assert_eq!(ctx.stats.unsynchronized_bytes, 0);
@@ -361,14 +355,11 @@ mod tests {
     handler
       .expect_on_ts_packet()
       .times(1)
-      .withf(|_ctx: &Context, pkt: &TsPacket| {
-        assert_eq!(pkt.payload, &PKT_ZERO_AF[5..]);
-        true
-      })
+      .withf(|_ctx: &Context, pkt: &TsPacket| pkt.payload == &PKT_ZERO_AF[5..])
       .return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = TsParser::new(&mut handler);
+    let mut parser = TsParser::new(handler);
     parser.parse(&mut ctx, PKT_ZERO_AF);
 
     assert_eq!(ctx.stats.unsynchronized_bytes, 0);
@@ -382,14 +373,11 @@ mod tests {
     handler
       .expect_on_ts_packet()
       .times(1)
-      .withf(|_ctx: &Context, pkt: &TsPacket| {
-        assert_eq!(pkt.payload.len(), 0);
-        true
-      })
+      .withf(|_ctx: &Context, pkt: &TsPacket| pkt.payload.len() == 0)
       .return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = TsParser::new(&mut handler);
+    let mut parser = TsParser::new(handler);
     parser.parse(&mut ctx, PKT_NO_PAYLOAD);
 
     assert_eq!(ctx.stats.unsynchronized_bytes, 0);
@@ -403,7 +391,7 @@ mod tests {
     handler.expect_on_ts_packet().times(0).return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = TsParser::new(&mut handler);
+    let mut parser = TsParser::new(handler);
 
     let mut data: Vec<u8> = PKT_NO_PAYLOAD.iter().cloned().collect();
     data[3] |= 0x10;
@@ -419,7 +407,7 @@ mod tests {
     handler.expect_on_ts_packet().times(4).return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = TsParser::new(&mut handler);
+    let mut parser = TsParser::new(handler);
 
     let mut data: Vec<u8> = PKT_AF_PCR.iter().cloned().collect();
     data.extend(PKT_AF_PCR.iter().cloned());
@@ -439,7 +427,7 @@ mod tests {
     handler.expect_on_ts_packet().times(3).return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = TsParser::new(&mut handler);
+    let mut parser = TsParser::new(handler);
 
     let mut data: Vec<u8> = vec![0x1b, 0x47, 0xaa, 0x00];
     data.extend(PKT_AF_PCR.iter().cloned());
@@ -459,7 +447,7 @@ mod tests {
     handler.expect_on_ts_packet().times(4).return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = TsParser::new(&mut handler);
+    let mut parser = TsParser::new(handler);
 
     let mut data: Vec<u8> = PKT_AF_PCR.iter().cloned().collect();
     data.extend(PKT_AF_PCR.iter().cloned());
@@ -484,7 +472,7 @@ mod tests {
     handler.expect_on_ts_packet().times(7).return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = TsParser::new(&mut handler);
+    let mut parser = TsParser::new(handler);
 
     let mut data: Vec<u8> = PKT_AF_PCR.iter().cloned().collect();
     data.extend(PKT_AF_PCR.iter().cloned());

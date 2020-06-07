@@ -51,8 +51,14 @@ impl ByteQueue {
     self.pop(n);
   }
 
-  pub fn head(self) -> i64 {
+  pub fn head(&self) -> i64 {
     self.head
+  }
+
+  pub fn clear(&mut self) {
+    self.buf.clear();
+    self.offset = 0;
+    self.head = 0;
   }
 }
 
