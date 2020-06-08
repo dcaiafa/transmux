@@ -13,14 +13,12 @@ pub trait PatHandler {
 }
 
 pub struct PatParser<H: PatHandler> {
-  current_pat: Option<Pat>,
   pat_handler: H,
 }
 
 impl<H: PatHandler> PatParser<H> {
   pub fn new(handler: H) -> PatParser<H> {
     PatParser {
-      current_pat: None,
       pat_handler: handler,
     }
   }
@@ -42,8 +40,8 @@ impl<H: PatHandler> PatParser<H> {
     pat.last_section = buf.get_u8();
 
     while buf.len() >= 4 {
-      let program_number = buf.get_u16() as u32;
-      let pid = buf.get_u16().bits(12..=0) as u32;
+      let program_number = buf.get_u16();
+      let pid = buf.get_u16().bits(12..=0);
 
       if program_number == 0 {
         pat.network_pid = Some(pid);
