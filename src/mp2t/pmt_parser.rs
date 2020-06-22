@@ -1,6 +1,5 @@
 use crate::context::Context;
 use crate::mp2t::desc::{self, StreamDesc};
-use crate::mp2t::psi_parser::PsiHandler;
 use crate::mp2t::{Pmt, StreamInfo, StreamType};
 use bytes::Buf;
 use twiddle::Twiddle;
@@ -15,16 +14,25 @@ const AC3_DESCRIPTOR: u8 = 106;
 // Enhanced_AC-3 descriptor tag as defined in ETSI EN 300 468 Annex D (D.5)
 const EAC3_DESCRIPTOR: u8 = 122;
 
-pub trait PmtHandler {
-  fn on_pmt(&mut self, ctx: &mut Context, pmt: &Pmt);
-}
-
-pub struct PmtParser<H: PmtHandler> {
+pub struct PmtParser<H> {
   handler: H,
 }
 
-impl<H: PmtHandler> PmtParser<H> {
-  fn parse_psi(&mut self, ctx: &mut Context, psi: &[u8]) -> bool {
+impl<H> PmtParser<H>
+where
+  H: FnMut(&mut Context, &Pmt),
+{
+  pub fn new(handler: H) -> PmtParser<H> {
+    PmtParser { handler }
+  }
+
+  pub fn parse_psi(&mut self, ctx: &mut Context, psi: &[u8]) {
+    if !self.parse(ctx, psi) {
+      ctx.stats.invalid_pmt += 1;
+    }
+  }
+
+  fn parse(&mut self, ctx: &mut Context, psi: &[u8]) -> bool {
     let mut buf = psi;
     if buf.len() < 9 {
       return false;
@@ -92,15 +100,7 @@ impl<H: PmtHandler> PmtParser<H> {
       index += 1;
     }
 
-    self.handler.on_pmt(ctx, &pmt);
+    (self.handler)(ctx, &pmt);
     true
-  }
-}
-
-impl<H: PmtHandler> PsiHandler for PmtParser<H> {
-  fn on_psi(&mut self, ctx: &mut Context, psi: &[u8]) {
-    if !self.parse_psi(ctx, psi) {
-      ctx.stats.invalid_pmt += 1;
-    }
   }
 }

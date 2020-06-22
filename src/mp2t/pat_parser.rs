@@ -1,29 +1,29 @@
 use crate::context::Context;
-use crate::mp2t::psi_parser::PsiHandler;
 use crate::mp2t::{Pat, ProgramInfo};
 use bytes::Buf;
 use twiddle::Twiddle;
 
-#[cfg(test)]
-use mockall::automock;
-
-#[cfg_attr(test, automock)]
-pub trait PatHandler {
-  fn on_pat(&mut self, ctx: &mut Context, pat: &Pat);
-}
-
-pub struct PatParser<H: PatHandler> {
+pub struct PatParser<H> {
   pat_handler: H,
 }
 
-impl<H: PatHandler> PatParser<H> {
+impl<H> PatParser<H>
+where
+  H: FnMut(&mut Context, &Pat),
+{
   pub fn new(handler: H) -> PatParser<H> {
     PatParser {
       pat_handler: handler,
     }
   }
 
-  fn parse_psi(&mut self, ctx: &mut Context, psi: &[u8]) -> bool {
+  pub fn parse_psi(&mut self, ctx: &mut Context, psi: &[u8]) {
+    if !self.parse(ctx, psi) {
+      ctx.stats.invalid_psi += 1;
+    }
+  }
+
+  fn parse(&mut self, ctx: &mut Context, psi: &[u8]) -> bool {
     let mut buf = psi;
 
     if buf.len() < 5 {
@@ -53,22 +53,24 @@ impl<H: PatHandler> PatParser<H> {
       }
     }
 
-    self.pat_handler.on_pat(ctx, &pat);
+    (self.pat_handler)(ctx, &pat);
 
     true
-  }
-}
-
-impl<H: PatHandler> PsiHandler for PatParser<H> {
-  fn on_psi(&mut self, ctx: &mut Context, psi: &[u8]) {
-    self.parse_psi(ctx, psi);
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use mockall::predicate::{always, eq};
+  use crate::context::Context;
+  use crate::mp2t::{Pat, ProgramInfo};
+  use mockall::automock;
+  use mockall::predicate::eq;
+
+  #[automock]
+  trait Handler {
+    fn on_pat(&mut self, pat: &Pat);
+  }
 
   static PAT: &'static [u8] = &[
     0x00, 0x01, 0xc1, 0x00, 0x00, 0x00, 0x00, 0xe0, 0xa, 0x00, 0x01, 0xe0,
@@ -77,36 +79,34 @@ mod tests {
 
   #[test]
   fn basic() {
-    let mut handler = MockPatHandler::new();
+    let mut handler = MockHandler::new();
 
     handler
       .expect_on_pat()
-      .with(
-        always(),
-        eq(Pat {
-          transport_stream_id: 1,
-          version: 0,
-          current_next: true,
-          section: 0,
-          last_section: 0,
-          network_pid: Some(10),
-          programs: vec![
-            ProgramInfo {
-              number: 1,
-              pid: 100,
-            },
-            ProgramInfo {
-              number: 1234,
-              pid: 1001,
-            },
-          ],
-        }),
-      )
+      .with(eq(Pat {
+        transport_stream_id: 1,
+        version: 0,
+        current_next: true,
+        section: 0,
+        last_section: 0,
+        network_pid: Some(10),
+        programs: vec![
+          ProgramInfo {
+            number: 1,
+            pid: 100,
+          },
+          ProgramInfo {
+            number: 1234,
+            pid: 1001,
+          },
+        ],
+      }))
       .return_const(())
       .times(1);
 
     let mut ctx = Context::new();
-    let mut parser = PatParser::new(handler);
-    parser.on_psi(&mut ctx, PAT)
+    let mut parser =
+      PatParser::new(|_ctx: &mut Context, pat: &Pat| handler.on_pat(pat));
+    parser.parse_psi(&mut ctx, PAT);
   }
 }
