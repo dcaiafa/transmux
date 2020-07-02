@@ -11,9 +11,9 @@ pub struct TsPacket<'a> {
   pub pos: i64,
   pub payload: &'a [u8],
   pub raw_data: &'a [u8],
-  pub pid: u32,
+  pub pid: u16,
   pub pcr: Option<u64>,
-  pub continuity_counter: i32,
+  pub continuity_counter: u8,
   pub payload_start: bool,
   pub discontinuity: bool,
   pub random_access: bool,
@@ -21,25 +21,23 @@ pub struct TsPacket<'a> {
 
 /// Implements a parser for MPEG-ts transport_packets as specified in
 /// ISO/IEC 13818-1 2.4.3.2.
-pub struct TsParser<H> {
-  handler: H,
+pub struct TsParser {
   byte_queue: ByteQueue,
   synchronized: bool,
 }
 
-impl<H> TsParser<H>
-where
-  H: FnMut(&mut Context, &TsPacket),
-{
-  pub fn new(handler: H) -> TsParser<H> {
+impl<'a> TsParser {
+  pub fn new() -> TsParser {
     TsParser {
-      handler: handler,
       byte_queue: ByteQueue::new(),
       synchronized: false,
     }
   }
 
-  pub fn parse(&mut self, ctx: &mut Context, data: &[u8]) {
+  pub fn parse<H>(&mut self, ctx: &mut Context, data: &[u8], mut on_pkt: H)
+  where
+    H: FnMut(&mut Context, &TsPacket),
+  {
     self.byte_queue.write(data);
     while self.byte_queue.len() >= PACKET_SIZE {
       if !self.synchronized {
@@ -49,7 +47,7 @@ where
       let packet = parse_packet(&self.byte_queue[..PACKET_SIZE]);
       match packet {
         Some(packet) => {
-          (self.handler)(ctx, &packet);
+          (on_pkt)(ctx, &packet);
           self.byte_queue.pop(PACKET_SIZE);
         }
         None => {
@@ -131,9 +129,9 @@ fn parse_packet(data: &[u8]) -> Option<TsPacket> {
   let header = buf.get_u32();
   packet.raw_data = data;
   packet.payload_start = header.bit(22);
-  packet.pid = header.bits(20..=8);
+  packet.pid = header.bits(20..=8) as u16;
   let adaptation_field_control = header.bits(5..=4);
-  packet.continuity_counter = header.bits(3..=0) as i32;
+  packet.continuity_counter = header.bits(3..=0) as u8;
 
   let has_adaptation_field = adaptation_field_control & 0x2 != 0;
   let has_payload = adaptation_field_control & 0x1 != 0;
@@ -302,8 +300,8 @@ mod tests {
       .return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = TsParser::new(|_, pkt| handler.on_pkt(pkt));
-    parser.parse(&mut ctx, PKT_NO_AF);
+    let mut parser = TsParser::new();
+    parser.parse(&mut ctx, PKT_NO_AF, |_, pkt| handler.on_pkt(pkt));
 
     assert_eq!(ctx.stats.unsynchronized_bytes, 0);
     assert_eq!(ctx.stats.malformed_ts_packets, 0);
@@ -322,8 +320,8 @@ mod tests {
       .return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = TsParser::new(|_, pkt| handler.on_pkt(pkt));
-    parser.parse(&mut ctx, PKT_TINY_AF);
+    let mut parser = TsParser::new();
+    parser.parse(&mut ctx, PKT_TINY_AF, |_, pkt| handler.on_pkt(pkt));
 
     assert_eq!(ctx.stats.unsynchronized_bytes, 0);
     assert_eq!(ctx.stats.malformed_ts_packets, 0);
@@ -342,8 +340,8 @@ mod tests {
       .return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = TsParser::new(|_, pkt| handler.on_pkt(pkt));
-    parser.parse(&mut ctx, PKT_AF_PCR);
+    let mut parser = TsParser::new();
+    parser.parse(&mut ctx, PKT_AF_PCR, |_, pkt| handler.on_pkt(pkt));
 
     assert_eq!(ctx.stats.unsynchronized_bytes, 0);
     assert_eq!(ctx.stats.malformed_ts_packets, 0);
@@ -360,8 +358,8 @@ mod tests {
       .return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = TsParser::new(|_, pkt| handler.on_pkt(pkt));
-    parser.parse(&mut ctx, PKT_ZERO_AF);
+    let mut parser = TsParser::new();
+    parser.parse(&mut ctx, PKT_ZERO_AF, |_, pkt| handler.on_pkt(pkt));
 
     assert_eq!(ctx.stats.unsynchronized_bytes, 0);
     assert_eq!(ctx.stats.malformed_ts_packets, 0);
@@ -378,8 +376,8 @@ mod tests {
       .return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = TsParser::new(|_, pkt| handler.on_pkt(pkt));
-    parser.parse(&mut ctx, PKT_NO_PAYLOAD);
+    let mut parser = TsParser::new();
+    parser.parse(&mut ctx, PKT_NO_PAYLOAD, |_, pkt| handler.on_pkt(pkt));
 
     assert_eq!(ctx.stats.unsynchronized_bytes, 0);
     assert_eq!(ctx.stats.malformed_ts_packets, 0);
@@ -392,11 +390,11 @@ mod tests {
     handler.expect_on_pkt().times(0).return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = TsParser::new(|_, pkt| handler.on_pkt(pkt));
+    let mut parser = TsParser::new();
 
     let mut data: Vec<u8> = PKT_NO_PAYLOAD.iter().cloned().collect();
     data[3] |= 0x10;
-    parser.parse(&mut ctx, &data);
+    parser.parse(&mut ctx, &data, |_, pkt| handler.on_pkt(pkt));
 
     assert_eq!(ctx.stats.malformed_ts_packets, 1);
   }
@@ -408,14 +406,14 @@ mod tests {
     handler.expect_on_pkt().times(4).return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = TsParser::new(|_, pkt| handler.on_pkt(pkt));
+    let mut parser = TsParser::new();
 
     let mut data: Vec<u8> = PKT_AF_PCR.iter().cloned().collect();
     data.extend(PKT_AF_PCR.iter().cloned());
     data.extend(PKT_AF_PCR.iter().cloned());
     data.extend(PKT_AF_PCR.iter().cloned());
 
-    parser.parse(&mut ctx, &data);
+    parser.parse(&mut ctx, &data, |_, pkt| handler.on_pkt(pkt));
 
     assert_eq!(ctx.stats.unsynchronized_bytes, 0);
     assert_eq!(ctx.stats.malformed_ts_packets, 0);
@@ -428,14 +426,14 @@ mod tests {
     handler.expect_on_pkt().times(3).return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = TsParser::new(|_, pkt| handler.on_pkt(pkt));
+    let mut parser = TsParser::new();
 
     let mut data: Vec<u8> = vec![0x1b, 0x47, 0xaa, 0x00];
     data.extend(PKT_AF_PCR.iter().cloned());
     data.extend(PKT_AF_PCR.iter().cloned());
     data.extend(PKT_AF_PCR.iter().cloned());
 
-    parser.parse(&mut ctx, &data);
+    parser.parse(&mut ctx, &data, |_, pkt| handler.on_pkt(pkt));
 
     assert_eq!(ctx.stats.unsynchronized_bytes, 4);
     assert_eq!(ctx.stats.malformed_ts_packets, 0);
@@ -448,7 +446,7 @@ mod tests {
     handler.expect_on_pkt().times(4).return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = TsParser::new(|_, pkt| handler.on_pkt(pkt));
+    let mut parser = TsParser::new();
 
     let mut data: Vec<u8> = PKT_AF_PCR.iter().cloned().collect();
     data.extend(PKT_AF_PCR.iter().cloned());
@@ -458,7 +456,7 @@ mod tests {
     data.extend(PKT_AF_PCR.iter().cloned());
     data.extend(PKT_AF_PCR.iter().cloned());
 
-    parser.parse(&mut ctx, &data);
+    parser.parse(&mut ctx, &data, |_, pkt| handler.on_pkt(pkt));
 
     // The first two packets (+ the 3 garbage bytes) were skipped because the
     // parser needs consecutive 4 packets to synchronize.
@@ -473,7 +471,7 @@ mod tests {
     handler.expect_on_pkt().times(7).return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = TsParser::new(|_, pkt| handler.on_pkt(pkt));
+    let mut parser = TsParser::new();
 
     let mut data: Vec<u8> = PKT_AF_PCR.iter().cloned().collect();
     data.extend(PKT_AF_PCR.iter().cloned());
@@ -484,7 +482,7 @@ mod tests {
     data.extend(PKT_AF_PCR.iter().cloned());
     data.extend(PKT_AF_PCR.iter().cloned());
 
-    parser.parse(&mut ctx, &data);
+    parser.parse(&mut ctx, &data, |_, pkt| handler.on_pkt(pkt));
 
     assert_eq!(ctx.stats.unsynchronized_bytes, 3);
     assert_eq!(ctx.stats.malformed_ts_packets, 1);

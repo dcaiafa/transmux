@@ -1,6 +1,7 @@
 mod demuxer;
 mod desc;
 mod pat_parser;
+mod pid_control;
 mod pmt_parser;
 mod psi_parser;
 mod ts_parser;
