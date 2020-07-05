@@ -1,12 +1,17 @@
-use crate::context::Context;
 use crate::crc;
-use crate::mp2t::ts_parser::TsPacket;
+use crate::mp2t::demuxer::Context;
+use crate::mp2t::ts_parser::{TsHandler, TsPacket};
 use bytes::Buf;
 
 const MAX_SECTION_LEN: usize = 1021;
 
+pub trait PsiHandler {
+  const TABLE_ID: u8;
+
+  fn on_psi(&mut self, ctx: &mut Context, psi: &[u8]);
+}
+
 pub struct PsiParser<H> {
-  table_id: u8,
   psi_handler: H,
   data: Vec<u8>,
   started: bool,
@@ -14,22 +19,13 @@ pub struct PsiParser<H> {
 
 impl<H> PsiParser<H>
 where
-  H: FnMut(&mut Context, &[u8]),
+  H: PsiHandler,
 {
-  pub fn new(table_id: u8, psi_handler: H) -> PsiParser<H> {
+  pub fn new(handler: H) -> PsiParser<H> {
     PsiParser {
-      table_id,
-      psi_handler,
+      psi_handler: handler,
       data: Vec::new(),
       started: false,
-    }
-  }
-
-  pub fn parse_pkt<'p>(&mut self, ctx: &mut Context, pkt: &TsPacket<'p>) {
-    if !self.parse(ctx, pkt) {
-      ctx.stats.invalid_psi += 1;
-      self.data.clear();
-      self.started = false;
     }
   }
 
@@ -72,7 +68,7 @@ where
     }
 
     let table_id = psi[0];
-    if table_id != self.table_id {
+    if table_id != H::TABLE_ID {
       return false;
     }
 
@@ -98,7 +94,7 @@ where
 
     // Send to the handler the section data (starting after section_length)
     // minus the CRC.
-    (self.psi_handler)(ctx, &psi[3..psi.len() - 4]);
+    self.psi_handler.on_psi(ctx, &psi[3..psi.len() - 4]);
 
     self.data.clear();
     self.started = false;
@@ -107,16 +103,24 @@ where
   }
 }
 
+impl<H> TsHandler for PsiParser<H>
+where
+  H: PsiHandler,
+{
+  fn on_pkt<'p>(&mut self, ctx: &mut Context, pkt: &TsPacket<'p>) {
+    if !self.parse(ctx, pkt) {
+      ctx.stats.invalid_psi += 1;
+      self.data.clear();
+      self.started = false;
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
   use mockall::automock;
-  use mockall::predicate::eq;
-
-  #[automock]
-  trait Handler {
-    fn on_psi(&mut self, psi: &[u8]);
-  }
+  use mockall::predicate::{always, eq};
 
   const PSI: &'static [u8] = &[
     0x05, // pointer_field
@@ -127,39 +131,62 @@ mod tests {
     0xFF, 0xFF, 0xFF, 0xFF, // padding
   ];
 
+  #[automock]
+  trait Handler {
+    fn on_psi(&mut self, ctx: &mut Context, psi: &[u8]);
+  }
+
+  // mockall does not support Associated Constants, so we must wrap the mock in
+  // a custom type.
+  #[derive(Default)]
+  struct StubPsiHandler {
+    pub mock: MockHandler,
+  }
+
+  impl PsiHandler for StubPsiHandler {
+    const TABLE_ID: u8 = 2;
+    fn on_psi(&mut self, ctx: &mut Context, psi: &[u8]) {
+      self.mock.on_psi(ctx, psi);
+    }
+  }
+
   #[test]
   fn simple() {
-    let mut handler = MockHandler::new();
+    let mut handler: StubPsiHandler = Default::default();
+
     handler
+      .mock
       .expect_on_psi()
-      .with(eq(&PSI[9..16]))
+      .with(always(), eq(&PSI[9..16]))
       .times(1)
       .return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = PsiParser::new(0x2, |_, psi| handler.on_psi(psi));
+    let mut parser = PsiParser::new(handler);
 
     let pkt = &TsPacket {
       payload: PSI,
       payload_start: true,
       ..Default::default()
     };
-    parser.parse_pkt(&mut ctx, &pkt);
+    parser.on_pkt(&mut ctx, &pkt);
   }
 
   #[test]
   fn multiple_packets() {
-    let mut handler = MockHandler::new();
+    let mut handler: StubPsiHandler = Default::default();
+
     handler
+      .mock
       .expect_on_psi()
-      .with(eq(&PSI[9..16]))
+      .with(always(), eq(&PSI[9..16]))
       .times(1)
       .return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = PsiParser::new(0x2, |_, psi| handler.on_psi(psi));
+    let mut parser = PsiParser::new(handler);
 
-    parser.parse_pkt(
+    parser.on_pkt(
       &mut ctx,
       &TsPacket {
         payload: &PSI[0..8],
@@ -167,7 +194,7 @@ mod tests {
         ..Default::default()
       },
     );
-    parser.parse_pkt(
+    parser.on_pkt(
       &mut ctx,
       &TsPacket {
         payload: &PSI[8..13],
@@ -175,7 +202,7 @@ mod tests {
         ..Default::default()
       },
     );
-    parser.parse_pkt(
+    parser.on_pkt(
       &mut ctx,
       &TsPacket {
         payload: &PSI[13..],
@@ -187,17 +214,19 @@ mod tests {
 
   #[test]
   fn not_started_before() {
-    let mut handler = MockHandler::new();
+    let mut handler: StubPsiHandler = Default::default();
+
     handler
+      .mock
       .expect_on_psi()
-      .with(eq(&PSI[9..16]))
+      .with(always(), eq(&PSI[9..16]))
       .times(1)
       .return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = PsiParser::new(0x2, |_, psi| handler.on_psi(psi));
+    let mut parser = PsiParser::new(handler);
 
-    parser.parse_pkt(
+    parser.on_pkt(
       &mut ctx,
       &TsPacket {
         payload: &[0xFF, 0xFF, 0xFF],
@@ -205,7 +234,7 @@ mod tests {
         ..Default::default()
       },
     );
-    parser.parse_pkt(
+    parser.on_pkt(
       &mut ctx,
       &TsPacket {
         payload: PSI,
@@ -217,17 +246,19 @@ mod tests {
 
   #[test]
   fn not_started_middle() {
-    let mut handler = MockHandler::new();
+    let mut handler: StubPsiHandler = Default::default();
+
     handler
+      .mock
       .expect_on_psi()
-      .with(eq(&PSI[9..16]))
+      .with(always(), eq(&PSI[9..16]))
       .times(2)
       .return_const(());
 
     let mut ctx = Context::new();
-    let mut parser = PsiParser::new(0x2, |_, psi| handler.on_psi(psi));
+    let mut parser = PsiParser::new(handler);
 
-    parser.parse_pkt(
+    parser.on_pkt(
       &mut ctx,
       &TsPacket {
         payload: PSI,
@@ -235,7 +266,7 @@ mod tests {
         ..Default::default()
       },
     );
-    parser.parse_pkt(
+    parser.on_pkt(
       &mut ctx,
       &TsPacket {
         payload: &[0xFF, 0xFF, 0xFF],
@@ -243,7 +274,7 @@ mod tests {
         ..Default::default()
       },
     );
-    parser.parse_pkt(
+    parser.on_pkt(
       &mut ctx,
       &TsPacket {
         payload: PSI,

@@ -1,31 +1,141 @@
-use crate::context::Context;
-use crate::mp2t::ts_parser::{TsPacket, TsParser};
-
+use crate::mp2t::pat_parser::PatParser;
+use crate::mp2t::psi_parser::PsiParser;
+use crate::mp2t::ts_parser::{TsHandler, TsPacket, TsParser};
+use crate::mp2t::{Pat, Pmt};
+use crate::stats::Stats;
 use std::collections::hash_map::HashMap;
+use std::collections::VecDeque;
+use std::io::Read;
 
+pub struct Context {
+  pub stats: Stats,
+  pub events: VecDeque<Event>,
+}
+
+impl Context {
+  pub fn new() -> Context {
+    Context {
+      stats: Default::default(),
+      events: VecDeque::new(),
+    }
+  }
+}
+
+#[derive(Debug)]
 pub enum Event {
-  ProgramSet,
-  Program,
+  Pat(Pat),
+  Pmt(Pmt),
+  Pes,
 }
 
 pub struct PesPacket {}
 
 pub struct Demuxer {
-  ts_parser: TsParser,
-  pids: HashMap<u16, Box<dyn Fn(&mut Context, PesPacket)>>,
+  ctx: Context,
+  ts_parser: TsParser<Demult>,
 }
 
 impl Demuxer {
   pub fn new() -> Demuxer {
     Demuxer {
-      ts_parser: TsParser::new(),
-      pids: HashMap::new(),
+      ctx: Context::new(),
+      ts_parser: TsParser::new(Demult::new()),
     }
   }
 
-  pub fn parse(&mut self, ctx: &mut Context, data: &[u8]) {
-    self.ts_parser.parse(ctx, data, |_ctx, _pkt| ());
+  pub fn parse<'a, 'b>(
+    &'a mut self,
+    input: &'b mut dyn Read,
+  ) -> Events<'a, 'b> {
+    return Events {
+      ctx: &mut self.ctx,
+      ts_parser: &mut self.ts_parser,
+      input: input,
+      buf: [0; 10240],
+    };
   }
+}
 
-  fn on_pkt(&mut self, _ctx: &mut Context, _pkt: &TsPacket) {}
+pub struct Events<'a, 'b> {
+  ctx: &'a mut Context,
+  ts_parser: &'a mut TsParser<Demult>,
+  input: &'b mut dyn Read,
+  buf: [u8; 10240],
+}
+
+impl<'a, 'b> Iterator for Events<'a, 'b> {
+  type Item = Event;
+
+  fn next(&mut self) -> Option<Self::Item> {
+    if let Some(event) = self.ctx.events.pop_front() {
+      return Some(event);
+    }
+
+    let n = self.input.read(&mut self.buf).unwrap();
+    self.ts_parser.push(&self.buf[..n]);
+    self.ts_parser.parse(self.ctx);
+    self.ctx.events.pop_front()
+  }
+}
+
+struct Demult {
+  pids: HashMap<u16, Box<dyn TsHandler>>,
+}
+
+impl Demult {
+  pub fn new() -> Demult {
+    let mut d = Demult {
+      pids: HashMap::new(),
+    };
+
+    d.pids.insert(0, Box::new(PsiParser::new(PatParser::new())));
+
+    d
+  }
+}
+
+impl TsHandler for Demult {
+  fn on_pkt(&mut self, ctx: &mut Context, pkt: &TsPacket) {
+    match self.pids.get_mut(&pkt.pid) {
+      Some(handler) => handler.on_pkt(ctx, pkt),
+      None => ctx.stats.ignored_ts_packets += 1,
+    }
+  }
+}
+
+#[cfg(test)]
+mod test {
+  use super::*;
+
+  const PKT_NO_AF: &'static [u8] = &[
+    0x47, 0x00, 0x65, 0x15, 0x9c, 0x04, 0x84, 0x4c, 0x16, 0x73, 0x53, 0x6e,
+    0xb5, 0xf1, 0xd8, 0x55, 0x66, 0x62, 0xb8, 0xc7, 0x72, 0x31, 0xda, 0x0c,
+    0x1a, 0xb2, 0x92, 0x28, 0x36, 0xd4, 0x10, 0xfb, 0x9c, 0x7e, 0xfa, 0xf7,
+    0x13, 0xe1, 0xf6, 0x9f, 0xf9, 0x27, 0x39, 0x88, 0x90, 0x23, 0x25, 0x7c,
+    0xcb, 0xe5, 0xbe, 0x1b, 0x57, 0xbc, 0xda, 0x1b, 0x98, 0xbb, 0xe1, 0xeb,
+    0xcb, 0x23, 0xdc, 0x1f, 0x78, 0x9a, 0x45, 0x4c, 0x58, 0xd6, 0x4e, 0x1d,
+    0x9b, 0xab, 0xe7, 0x0d, 0xe4, 0x68, 0x29, 0x58, 0x0d, 0x67, 0x1d, 0x5d,
+    0xab, 0xd6, 0x5d, 0xe9, 0x1b, 0x3b, 0x1a, 0x5f, 0x0e, 0x4b, 0xed, 0x8e,
+    0x41, 0xd8, 0xde, 0xef, 0x65, 0x5f, 0x70, 0x26, 0x90, 0x17, 0xab, 0x10,
+    0x8a, 0xc4, 0xd4, 0xf1, 0x8e, 0x49, 0xce, 0x27, 0x28, 0xc2, 0x0f, 0xee,
+    0xf6, 0xbb, 0x85, 0x15, 0x9a, 0x95, 0x79, 0x3d, 0x1d, 0x02, 0xb5, 0xdd,
+    0x03, 0xc8, 0xec, 0x40, 0x44, 0xa8, 0x25, 0x17, 0x03, 0x17, 0xc9, 0x1d,
+    0xce, 0x10, 0x59, 0x00, 0x9c, 0x99, 0xfa, 0x3d, 0xbd, 0xb1, 0x1b, 0x36,
+    0xa6, 0x6c, 0x00, 0x00, 0x5e, 0x73, 0x8a, 0x28, 0x70, 0x41, 0x87, 0xec,
+    0xa3, 0xa7, 0x0c, 0x0a, 0x36, 0xe7, 0x87, 0x7b, 0xcc, 0x64, 0x6d, 0x5a,
+    0xf4, 0x10, 0xc6, 0xad, 0xe4, 0x92, 0x45, 0xa2,
+  ];
+
+  #[test]
+  fn basic() {
+    let mut demuxer = Demuxer::new();
+
+    let mut buf = PKT_NO_AF;
+    for e in demuxer.parse(&mut buf) {
+      println!("{:?}", e);
+    }
+    for e in demuxer.parse(&mut buf) {
+      println!("{:?}", e);
+    }
+  }
 }

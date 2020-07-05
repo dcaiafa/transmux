@@ -58,7 +58,7 @@ const FOURCC_AC_3: u32 = 0x41432d33; // "AC-3"
 const FOURCC_EAC3: u32 = 0x45414333; // "EAC3"
 const FOURCC_ID3: u32 = 0x49443320; // "ID3 "
 
-#[derive(Default, Debug, PartialEq, Eq)]
+#[derive(Default, Debug, PartialEq, Eq, Clone)]
 pub struct Pat {
   pub transport_stream_id: u16,
   pub version: u8,
@@ -69,7 +69,7 @@ pub struct Pat {
   pub programs: Vec<ProgramInfo>,
 }
 
-#[derive(Default, Debug, PartialEq, Eq)]
+#[derive(Default, Debug, PartialEq, Eq, Clone)]
 pub struct ProgramInfo {
   pub number: u16,
   pub pid: u16,
