@@ -1,4 +1,3 @@
-mod demuxer;
 mod desc;
 mod pat_parser;
 mod pid_control;
@@ -6,7 +5,9 @@ mod pmt_parser;
 mod psi_parser;
 mod ts_parser;
 
-use desc::StreamDesc;
+pub mod demuxer;
+
+pub use desc::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StreamType(u32);
@@ -75,7 +76,7 @@ pub struct ProgramInfo {
   pub pid: u16,
 }
 
-#[derive(Default, Debug, PartialEq, Eq)]
+#[derive(Default, Debug, PartialEq, Eq, Clone)]
 pub struct Pmt {
   pub program_number: u16,
   pub version: u8,
@@ -84,7 +85,7 @@ pub struct Pmt {
   pub streams: Vec<StreamInfo>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct StreamInfo {
   pub pid: u16,
   pub stream_type: StreamType,

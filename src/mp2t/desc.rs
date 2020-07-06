@@ -1,6 +1,6 @@
 use bytes::Buf;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum StreamDesc {
   Registration(RegistrationDesc),
   Metadata(MetadataDesc),
@@ -8,23 +8,23 @@ pub enum StreamDesc {
   Eac3(Eac3Desc),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct RegistrationDesc {
   pub format_id: u32,
 }
 const REGISTRATION_DESC_TAG: u8 = 5; // ISO/IEC 13818-1 Table 2-45
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct MetadataDesc {
   pub app_format_id: Option<u32>,
 }
 const METADATA_DESC_TAG: u8 = 38; // ISO/IEC 13818-1 Table 2-45
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Ac3Desc;
 const AC3_DESCRIPTOR_TAG: u8 = 106; // ETSI EN 300 468 Annex D (D.3)
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Eac3Desc;
 const EAC3_DESCRIPTOR_TAG: u8 = 122; // ETSI EN 300 468 Annex D (D.5)
 

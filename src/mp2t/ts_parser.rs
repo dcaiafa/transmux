@@ -80,6 +80,14 @@ where
     false
   }
 
+  pub fn handler(&self) -> &H {
+    return &self.handler;
+  }
+
+  pub fn mut_handler(&mut self) -> &mut H {
+    return &mut self.handler;
+  }
+
   fn synchronize(&mut self, ctx: &mut Context) {
     self.synchronized = false;
     let sync_idx = self.find_sync_word();

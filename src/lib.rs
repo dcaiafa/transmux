@@ -3,5 +3,8 @@
 mod crc;
 mod error;
 mod internal;
-mod mp2t;
-mod stats;
+
+pub mod mp2t;
+pub mod stats;
+
+pub use crate::error::*;

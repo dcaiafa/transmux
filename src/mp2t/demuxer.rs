@@ -1,11 +1,21 @@
 use crate::mp2t::pat_parser::PatParser;
 use crate::mp2t::psi_parser::PsiParser;
 use crate::mp2t::ts_parser::{TsHandler, TsPacket, TsParser};
-use crate::mp2t::{Pat, Pmt};
+use crate::mp2t::{Pat, Pmt, ProgramInfo};
 use crate::stats::Stats;
+use crate::{Error, Result};
 use std::collections::hash_map::HashMap;
+use std::collections::hash_set::HashSet;
 use std::collections::VecDeque;
+use std::io;
 use std::io::Read;
+
+#[derive(Default, Debug, Clone)]
+pub struct Program {
+  pub program_info: ProgramInfo,
+  pub pmt: Option<Pmt>,
+  pub enabled: bool,
+}
 
 pub struct Context {
   pub stats: Stats,
@@ -23,7 +33,7 @@ impl Context {
 
 #[derive(Debug)]
 pub enum Event {
-  Pat(Pat),
+  Pat { new: Pat, old: Option<Pat> },
   Pmt(Pmt),
   Pes,
 }
@@ -33,6 +43,7 @@ pub struct PesPacket {}
 pub struct Demuxer {
   ctx: Context,
   ts_parser: TsParser<Demult>,
+  buf: [u8; 10240],
 }
 
 impl Demuxer {
@@ -40,57 +51,108 @@ impl Demuxer {
     Demuxer {
       ctx: Context::new(),
       ts_parser: TsParser::new(Demult::new()),
+      buf: [0; 10240],
     }
   }
 
   pub fn parse<'a, 'b>(
     &'a mut self,
     input: &'b mut dyn Read,
-  ) -> Events<'a, 'b> {
-    return Events {
-      ctx: &mut self.ctx,
-      ts_parser: &mut self.ts_parser,
-      input: input,
-      buf: [0; 10240],
-    };
-  }
-}
-
-pub struct Events<'a, 'b> {
-  ctx: &'a mut Context,
-  ts_parser: &'a mut TsParser<Demult>,
-  input: &'b mut dyn Read,
-  buf: [u8; 10240],
-}
-
-impl<'a, 'b> Iterator for Events<'a, 'b> {
-  type Item = Event;
-
-  fn next(&mut self) -> Option<Self::Item> {
-    if let Some(event) = self.ctx.events.pop_front() {
-      return Some(event);
+  ) -> io::Result<Option<Event>> {
+    loop {
+      if let Some(e) = self.ctx.events.pop_front() {
+        match e {
+          Event::Pat { new: ref pat, .. } => {
+            self.ts_parser.mut_handler().on_pat(pat)
+          }
+          _ => (),
+        }
+        return Ok(Some(e));
+      }
+      let n = input.read(&mut self.buf)?;
+      if n == 0 {
+        return Ok(None);
+      }
+      self.ts_parser.push(&self.buf[..n]);
+      self.ts_parser.parse(&mut self.ctx);
     }
+  }
 
-    let n = self.input.read(&mut self.buf).unwrap();
-    self.ts_parser.push(&self.buf[..n]);
-    self.ts_parser.parse(self.ctx);
-    self.ctx.events.pop_front()
+  pub fn programs<'a>(&'a self) -> impl Iterator<Item = &'a Program> {
+    self.ts_parser.handler().programs()
   }
 }
 
 struct Demult {
   pids: HashMap<u16, Box<dyn TsHandler>>,
+  programs: HashMap<u16, Program>,
 }
 
 impl Demult {
   pub fn new() -> Demult {
     let mut d = Demult {
       pids: HashMap::new(),
+      programs: HashMap::new(),
     };
 
     d.pids.insert(0, Box::new(PsiParser::new(PatParser::new())));
 
     d
+  }
+
+  pub fn on_pat(&mut self, pat: &Pat) {
+    let valid_program_nums: HashSet<u16> =
+      pat.programs.iter().map(|p| p.number).collect();
+
+    let dead_program_nums: Vec<u16> = self
+      .programs
+      .keys()
+      .filter(|prog_num| !valid_program_nums.contains(prog_num))
+      .cloned()
+      .collect();
+
+    for dead_program_num in dead_program_nums {
+      // Remove all pid mappings associated with the dead program, including the
+      // pid for the PMT.
+      let program_pid = self.programs[&dead_program_num].program_info.pid;
+      self.pids.remove(&program_pid);
+      if let Some(ref pmt) = self.programs[&dead_program_num].pmt {
+        for ref stream in &pmt.streams {
+          self.pids.remove(&stream.pid);
+        }
+      }
+
+      // Stop tracking the program.
+      self.programs.remove(&dead_program_num);
+    }
+
+    let mut new_programs: Vec<Program> = pat
+      .programs
+      .iter()
+      .filter(|program_info| !self.programs.contains_key(&program_info.number))
+      .map(|program_info| Program {
+        program_info: program_info.clone(),
+        pmt: None,
+        enabled: false,
+      })
+      .collect();
+
+    for prog in new_programs.drain(..) {
+      self.programs.insert(prog.program_info.number, prog);
+    }
+  }
+
+  pub fn programs<'a>(&'a self) -> impl Iterator<Item = &'a Program> {
+    self.programs.values()
+  }
+
+  pub fn enable_program(&mut self, program_number: u16) -> Result<()> {
+    if let Some(ref mut prog) = self.programs.get_mut(&program_number) {
+      prog.enabled = true;
+      Ok(())
+    } else {
+      Err(Error::InvalidProgramNumber)
+    }
   }
 }
 
@@ -99,43 +161,6 @@ impl TsHandler for Demult {
     match self.pids.get_mut(&pkt.pid) {
       Some(handler) => handler.on_pkt(ctx, pkt),
       None => ctx.stats.ignored_ts_packets += 1,
-    }
-  }
-}
-
-#[cfg(test)]
-mod test {
-  use super::*;
-
-  const PKT_NO_AF: &'static [u8] = &[
-    0x47, 0x00, 0x65, 0x15, 0x9c, 0x04, 0x84, 0x4c, 0x16, 0x73, 0x53, 0x6e,
-    0xb5, 0xf1, 0xd8, 0x55, 0x66, 0x62, 0xb8, 0xc7, 0x72, 0x31, 0xda, 0x0c,
-    0x1a, 0xb2, 0x92, 0x28, 0x36, 0xd4, 0x10, 0xfb, 0x9c, 0x7e, 0xfa, 0xf7,
-    0x13, 0xe1, 0xf6, 0x9f, 0xf9, 0x27, 0x39, 0x88, 0x90, 0x23, 0x25, 0x7c,
-    0xcb, 0xe5, 0xbe, 0x1b, 0x57, 0xbc, 0xda, 0x1b, 0x98, 0xbb, 0xe1, 0xeb,
-    0xcb, 0x23, 0xdc, 0x1f, 0x78, 0x9a, 0x45, 0x4c, 0x58, 0xd6, 0x4e, 0x1d,
-    0x9b, 0xab, 0xe7, 0x0d, 0xe4, 0x68, 0x29, 0x58, 0x0d, 0x67, 0x1d, 0x5d,
-    0xab, 0xd6, 0x5d, 0xe9, 0x1b, 0x3b, 0x1a, 0x5f, 0x0e, 0x4b, 0xed, 0x8e,
-    0x41, 0xd8, 0xde, 0xef, 0x65, 0x5f, 0x70, 0x26, 0x90, 0x17, 0xab, 0x10,
-    0x8a, 0xc4, 0xd4, 0xf1, 0x8e, 0x49, 0xce, 0x27, 0x28, 0xc2, 0x0f, 0xee,
-    0xf6, 0xbb, 0x85, 0x15, 0x9a, 0x95, 0x79, 0x3d, 0x1d, 0x02, 0xb5, 0xdd,
-    0x03, 0xc8, 0xec, 0x40, 0x44, 0xa8, 0x25, 0x17, 0x03, 0x17, 0xc9, 0x1d,
-    0xce, 0x10, 0x59, 0x00, 0x9c, 0x99, 0xfa, 0x3d, 0xbd, 0xb1, 0x1b, 0x36,
-    0xa6, 0x6c, 0x00, 0x00, 0x5e, 0x73, 0x8a, 0x28, 0x70, 0x41, 0x87, 0xec,
-    0xa3, 0xa7, 0x0c, 0x0a, 0x36, 0xe7, 0x87, 0x7b, 0xcc, 0x64, 0x6d, 0x5a,
-    0xf4, 0x10, 0xc6, 0xad, 0xe4, 0x92, 0x45, 0xa2,
-  ];
-
-  #[test]
-  fn basic() {
-    let mut demuxer = Demuxer::new();
-
-    let mut buf = PKT_NO_AF;
-    for e in demuxer.parse(&mut buf) {
-      println!("{:?}", e);
-    }
-    for e in demuxer.parse(&mut buf) {
-      println!("{:?}", e);
     }
   }
 }

@@ -49,7 +49,10 @@ impl PatParser {
     };
 
     if changed {
-      ctx.events.push_back(Event::Pat(pat.clone()));
+      ctx.events.push_back(Event::Pat {
+        new: pat.clone(),
+        old: self.current.clone(),
+      });
       self.current = Some(pat);
     }
 
@@ -95,7 +98,7 @@ mod tests {
     assert_eq!(ctx.events.len(), 1);
     assert_pattern!(
       ctx.events[0],
-      Event::Pat(ref pat),
+      Event::Pat{new: ref pat, old: None},
       assert_eq!(
         pat,
         &Pat {
