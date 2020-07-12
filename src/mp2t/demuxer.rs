@@ -1,11 +1,11 @@
 use crate::mp2t::pat_parser::PatParser;
+use crate::mp2t::pmt_parser::PmtParser;
 use crate::mp2t::psi_parser::PsiParser;
 use crate::mp2t::ts_parser::{TsHandler, TsPacket, TsParser};
 use crate::mp2t::{Pat, Pmt, ProgramInfo};
 use crate::stats::Stats;
 use crate::{Error, Result};
 use std::collections::hash_map::HashMap;
-use std::collections::hash_set::HashSet;
 use std::collections::VecDeque;
 use std::io;
 use std::io::Read;
@@ -34,7 +34,7 @@ impl Context {
 #[derive(Debug)]
 pub enum Event {
   Pat { new: Pat, old: Option<Pat> },
-  Pmt(Pmt),
+  Pmt { new: Pmt, old: Option<Pmt> },
   Pes,
 }
 
@@ -85,6 +85,10 @@ impl Demuxer {
   pub fn programs<'a>(&'a self) -> impl Iterator<Item = &'a Program> {
     self.ts_parser.handler().programs()
   }
+
+  pub fn enable_program(&mut self, program_number: u16) -> Result<()> {
+    self.ts_parser.mut_handler().enable_program(program_number)
+  }
 }
 
 struct Demult {
@@ -103,14 +107,22 @@ impl Demult {
   }
 
   pub fn on_pat(&mut self, pat: &Pat) {
-    let valid_program_nums: HashSet<u16> =
-      pat.programs.iter().map(|p| p.number).collect();
+    let valid_programs: HashMap<u16, &ProgramInfo> =
+      pat.programs.iter().map(|p| (p.number, p)).collect();
 
+    // Compile list of programs currently tracked that were invalidated by this
+    // new PAT. This includes programs not in the current PAT, or programs whose
+    // program_pid changed.
     let dead_program_nums: Vec<u16> = self
       .programs
-      .keys()
-      .filter(|prog_num| !valid_program_nums.contains(prog_num))
-      .cloned()
+      .values()
+      .filter(|existing_prog| {
+        match valid_programs.get(&existing_prog.program_info.number) {
+          Some(valid_prog) => existing_prog.program_info.pid != valid_prog.pid,
+          None => false,
+        }
+      })
+      .map(|prog| prog.program_info.number)
       .collect();
 
     for dead_program_num in dead_program_nums {
@@ -151,7 +163,14 @@ impl Demult {
   pub fn enable_program(&mut self, program_number: u16) -> Result<()> {
     match self.programs.get_mut(&program_number) {
       Some(ref mut prog) => {
-        prog.enabled = true;
+        if !prog.enabled {
+          prog.enabled = true;
+          println!("Enabling program {:?}", prog);
+          self.pids.insert(
+            prog.program_info.pid,
+            Box::new(PsiParser::new(PmtParser::new())),
+          );
+        }
         Ok(())
       }
       None => Err(Error::InvalidProgramNumber),

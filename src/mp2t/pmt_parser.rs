@@ -1,5 +1,6 @@
-use crate::mp2t::demuxer::Context;
+use crate::mp2t::demuxer::{Context, Event};
 use crate::mp2t::desc::{self, StreamDesc};
+use crate::mp2t::psi_parser::PsiHandler;
 use crate::mp2t::{Pmt, StreamInfo, StreamType};
 use bytes::Buf;
 use twiddle::Twiddle;
@@ -14,22 +15,13 @@ const AC3_DESCRIPTOR: u8 = 106;
 // Enhanced_AC-3 descriptor tag as defined in ETSI EN 300 468 Annex D (D.5)
 const EAC3_DESCRIPTOR: u8 = 122;
 
-pub struct PmtParser<H> {
-  handler: H,
+pub struct PmtParser {
+  current: Option<Pmt>,
 }
 
-impl<H> PmtParser<H>
-where
-  H: FnMut(&mut Context, &Pmt),
-{
-  pub fn new(handler: H) -> PmtParser<H> {
-    PmtParser { handler }
-  }
-
-  pub fn parse_psi(&mut self, ctx: &mut Context, psi: &[u8]) {
-    if !self.parse(ctx, psi) {
-      ctx.stats.invalid_pmt += 1;
-    }
+impl PmtParser {
+  pub fn new() -> PmtParser {
+    PmtParser { current: None }
   }
 
   fn parse(&mut self, ctx: &mut Context, psi: &[u8]) -> bool {
@@ -76,6 +68,8 @@ where
 
       // Parse stream descriptors.
       let mut es_info = &buf[..es_info_len];
+      buf.advance(es_info_len);
+
       let mut descs = Vec::<StreamDesc>::new();
       while es_info.len() >= 2 {
         let desc_tag = es_info.get_u8();
@@ -100,7 +94,29 @@ where
       index += 1;
     }
 
-    (self.handler)(ctx, &pmt);
+    let changed = match self.current {
+      Some(ref current) => pmt != *current,
+      None => true,
+    };
+
+    if changed {
+      ctx.events.push_back(Event::Pmt {
+        new: pmt.clone(),
+        old: self.current.clone(),
+      });
+      self.current = Some(pmt);
+    }
+
     true
+  }
+}
+
+impl PsiHandler for PmtParser {
+  const TABLE_ID: u8 = 2; // From ISO/IEC 13818-1: Table 2-31
+
+  fn on_psi(&mut self, ctx: &mut Context, psi: &[u8]) {
+    if !self.parse(ctx, psi) {
+      ctx.stats.invalid_pmt += 1;
+    }
   }
 }

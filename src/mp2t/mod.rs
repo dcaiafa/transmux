@@ -1,3 +1,5 @@
+use std::fmt;
+
 mod desc;
 mod pat_parser;
 mod pid_control;
@@ -9,12 +11,18 @@ pub mod demuxer;
 
 pub use desc::*;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct StreamType(u32);
 
-impl ToString for StreamType {
-  fn to_string(&self) -> String {
-    stream_type_str(self)
+impl fmt::Display for StreamType {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{}", stream_type_str(self))
+  }
+}
+
+impl fmt::Debug for StreamType {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    (self as &dyn fmt::Display).fmt(f)
   }
 }
 
