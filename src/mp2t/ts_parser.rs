@@ -51,7 +51,7 @@ where
     self.byte_queue.write(data);
   }
 
-  pub fn parse(&mut self, ctx: &mut Context) -> bool {
+  pub fn parse(&mut self, ctx: &mut Context) {
     while self.byte_queue.len() >= PACKET_SIZE {
       if !self.synchronized {
         self.synchronize(ctx);
@@ -63,7 +63,7 @@ where
           self.handler.on_pkt(ctx, &packet);
           self.byte_queue.pop(PACKET_SIZE);
           if !ctx.events.is_empty() {
-            return true;
+            break;
           }
         }
         None => {
@@ -77,7 +77,6 @@ where
         }
       }
     }
-    false
   }
 
   pub fn handler(&self) -> &H {

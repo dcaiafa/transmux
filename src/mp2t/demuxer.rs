@@ -60,21 +60,25 @@ impl Demuxer {
     input: &'b mut dyn Read,
   ) -> io::Result<Option<Event>> {
     loop {
-      if let Some(e) = self.ctx.events.pop_front() {
-        match e {
-          Event::Pat { new: ref pat, .. } => {
-            self.ts_parser.mut_handler().on_pat(pat)
-          }
-          _ => (),
-        }
-        return Ok(Some(e));
-      }
-      let n = input.read(&mut self.buf)?;
-      if n == 0 {
-        return Ok(None);
-      }
-      self.ts_parser.push(&self.buf[..n]);
       self.ts_parser.parse(&mut self.ctx);
+      match self.ctx.events.pop_front() {
+        Some(e) => {
+          match e {
+            Event::Pat { new: ref pat, .. } => {
+              self.ts_parser.mut_handler().on_pat(pat)
+            }
+            _ => (),
+          }
+          return Ok(Some(e));
+        }
+        None => {
+          let n = input.read(&mut self.buf)?;
+          if n == 0 {
+            return Ok(None);
+          }
+          self.ts_parser.push(&self.buf[..n]);
+        }
+      }
     }
   }
 
@@ -94,10 +98,8 @@ impl Demult {
       pids: HashMap::new(),
       programs: HashMap::new(),
     };
-
     d.pids.insert(0, Box::new(PsiParser::new(PatParser::new())));
-
-    d
+    return d;
   }
 
   pub fn on_pat(&mut self, pat: &Pat) {
@@ -113,7 +115,7 @@ impl Demult {
 
     for dead_program_num in dead_program_nums {
       // Remove all pid mappings associated with the dead program, including the
-      // pid for the PMT.
+      // PMT's pid.
       let program_pid = self.programs[&dead_program_num].program_info.pid;
       self.pids.remove(&program_pid);
       if let Some(ref pmt) = self.programs[&dead_program_num].pmt {
@@ -147,11 +149,12 @@ impl Demult {
   }
 
   pub fn enable_program(&mut self, program_number: u16) -> Result<()> {
-    if let Some(ref mut prog) = self.programs.get_mut(&program_number) {
-      prog.enabled = true;
-      Ok(())
-    } else {
-      Err(Error::InvalidProgramNumber)
+    match self.programs.get_mut(&program_number) {
+      Some(ref mut prog) => {
+        prog.enabled = true;
+        Ok(())
+      }
+      None => Err(Error::InvalidProgramNumber),
     }
   }
 }
